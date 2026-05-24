@@ -17,6 +17,10 @@
 #             — resize(lambda) was anchoring to top-left, not center
 #             — Replaced with clean fade-in/out captions (more professional)
 #
+#   ✅ FIX 4: GitHub Actions / CI compatibility
+#             — client_secret.json and token.json written from base64-encoded env vars
+#             — Browser OAuth flow replaced with refresh-token-only path (no UI needed)
+#
 # Still 100% FREE — no new API keys required
 
 import os
@@ -25,6 +29,7 @@ import asyncio
 import math
 import random
 import re
+import base64
 import requests
 from pathlib import Path
 from datetime import datetime
@@ -56,8 +61,10 @@ from moviepy.video.fx.all import crop
 #  CONFIGURATION
 # ═══════════════════════════════════════════════════════════════
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
+GROQ_API_KEY       = os.getenv("GROQ_API_KEY")
+PEXELS_API_KEY     = os.getenv("PEXELS_API_KEY")
+CLIENT_SECRET_JSON = os.getenv("CLIENT_SECRET_JSON")   # base64-encoded contents of client_secret.json
+TOKEN_JSON         = os.getenv("TOKEN_JSON")            # base64-encoded contents of token.json
 
 NICHE = "amazing science facts"
 
@@ -102,7 +109,7 @@ def _load_font(size: int) -> ImageFont.FreeTypeFont:
 
 
 # ═══════════════════════════════════════════════════════════════
-#  TEXT RENDERING  (unchanged — was working fine)
+#  TEXT RENDERING
 # ═══════════════════════════════════════════════════════════════
 
 def _render_text_image(
@@ -173,12 +180,6 @@ def _text_clip(
     start: float = 0.0,
     opacity: float = 1.0,
 ) -> ImageClip:
-    """
-    FIX 3: Removed animation_effect parameter entirely.
-    The old system called set_position() / resize() on top of an already-positioned clip,
-    overriding the 'center' position and causing text to snap to the top-left corner.
-    Clean fade-in/out is applied at the call site instead.
-    """
     arr = _render_text_image(
         text, WIDTH, font_size, text_color, stroke_color, stroke_width, bg_color=bg_color
     )
@@ -196,31 +197,21 @@ def _text_clip(
 # ═══════════════════════════════════════════════════════════════
 
 def _clean_for_tts(text: str) -> str:
-    """
-    Strip ALL [MARKER] tags before sending to edge_tts.
-    [PAUSE] becomes '...' so the TTS engine inserts a natural pause;
-    all other tags are removed silently.
-
-    Previously the code tried to use SSML (<speak>/<break>) but edge_tts
-    doesn't reliably parse SSML from Communicate(), causing it to read the
-    raw XML characters aloud.
-    """
-    text = re.sub(r'\[PAUSE\]', '...', text)          # natural pause via punctuation
-    text = re.sub(r'\[[A-Z_0-9]+\]', '', text)        # strip any remaining [MARKER]
-    text = re.sub(r'<[^>]+>', '', text)                # strip any leftover XML/HTML tags
+    text = re.sub(r'\[PAUSE\]', '...', text)
+    text = re.sub(r'\[[A-Z_0-9]+\]', '', text)
+    text = re.sub(r'<[^>]+>', '', text)
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
 
 def _clean_for_display(text: str) -> str:
-    """Strip all markers for caption rendering — no XML-like text on screen."""
     text = re.sub(r'\[[A-Z_0-9]+\]', '', text)
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
 
 # ═══════════════════════════════════════════════════════════════
-#  VOICEOVER  (simplified — no SSML, just clean text)
+#  VOICEOVER
 # ═══════════════════════════════════════════════════════════════
 
 async def _tts_async(text: str, path: Path, voice: str):
@@ -249,8 +240,6 @@ def generate_voiceover(script_lines: list, path: Path) -> str:
 
 # ═══════════════════════════════════════════════════════════════
 #  SCRIPT GENERATION
-#  (Removed [MARKER] instructions from prompt — they caused the TTS bug.
-#   The LLM was told to write them; now it isn't.)
 # ═══════════════════════════════════════════════════════════════
 
 def generate_script() -> dict:
@@ -309,23 +298,6 @@ Return ONLY valid JSON (no markdown, no code fences):
 
 # ═══════════════════════════════════════════════════════════════
 #  FIX 2 — PROCEDURAL LOFI BACKGROUND MUSIC
-#
-#  Replaces Pixabay (required free API key registration, silently
-#  returned 401) and the old ambient sine-bed (barely audible, not musical).
-#
-#  Generates a full lofi beat in numpy:
-#    • Kick drum  (frequency-swept sine, beats 1 & 3)
-#    • Snare      (noise + tone blend, beats 2 & 4)
-#    • Hi-hat     (filtered noise, 8th notes)
-#    • Bass line  (minor pentatonic, per-beat notes)
-#    • Chord pad  (3-voice chords, whole notes, soft chorus)
-#    • Melody     (bell-like overtones, pentatonic pattern)
-#    • Vinyl crackle (lofi character)
-#
-#  100% free — no downloads, no API, no network required.
-#  About YouTube's Studio "Add Audio" feature: the YouTube Data API v3
-#  videos().insert() endpoint has no parameter for this — it's only
-#  available in the web Studio UI and is not exposed programmatically.
 # ═══════════════════════════════════════════════════════════════
 
 def generate_background_music(duration: float) -> AudioClip:
@@ -335,14 +307,13 @@ def generate_background_music(duration: float) -> AudioClip:
     n    = int(duration * sr)
     buf  = np.zeros(n, dtype=np.float64)
 
-    # ── Scale: minor pentatonic (root randomly chosen) ──────────────────
     root   = random.choice([130.81, 138.59, 146.83, 155.56, 164.81])
     ratios = [1.0, 1.189, 1.335, 1.587, 1.782, 2.0, 2.378]
     scale  = [root * r for r in ratios]
 
     rng = np.random.default_rng(random.randint(0, 99999))
 
-    # ── Kick drum (beats 1 & 3 of every bar) ────────────────────────────
+    # ── Kick drum (beats 1 & 3) ──────────────────────────────────────────
     for i in range(int(duration / beat) + 2):
         if i % 4 not in [0, 2]:
             continue
@@ -351,8 +322,8 @@ def generate_background_music(duration: float) -> AudioClip:
         if L <= 0:
             continue
         t_k    = np.arange(L) / sr
-        f_env  = 80 * np.exp(-t_k * 30) + 36          # pitch drops 80→36 Hz
-        phase  = 2 * np.pi * np.cumsum(f_env) / sr     # correct freq integration
+        f_env  = 80 * np.exp(-t_k * 30) + 36
+        phase  = 2 * np.pi * np.cumsum(f_env) / sr
         kick   = np.sin(phase) * np.exp(-t_k * 13) * 0.40
         buf[idx:idx + L] += kick
 
@@ -370,7 +341,7 @@ def generate_background_music(duration: float) -> AudioClip:
         env   = np.exp(-t_s * 28)
         buf[idx:idx + L] += (0.55 * noise + 0.45 * tone) * env * 0.18
 
-    # ── Hi-hat (8th notes, softer on offbeats) ───────────────────────────
+    # ── Hi-hat (8th notes) ──────────────────────────────────────────────
     eighth = beat / 2
     for i in range(int(duration / eighth) + 2):
         idx = int(i * eighth * sr)
@@ -381,7 +352,7 @@ def generate_background_music(duration: float) -> AudioClip:
         vol  = 0.07 if i % 2 == 0 else 0.035
         buf[idx:idx + L] += rng.standard_normal(L) * np.exp(-t_h * 110) * vol
 
-    # ── Bass line (one note per beat, minor pentatonic) ──────────────────
+    # ── Bass line ────────────────────────────────────────────────────────
     bass_pat = [scale[0] / 2, scale[0] / 2, scale[2] / 2, scale[1] / 2,
                 scale[0] / 2, scale[3] / 2, scale[1] / 2, scale[0] / 2]
     for i in range(int(duration / beat) + 2):
@@ -398,7 +369,7 @@ def generate_background_music(duration: float) -> AudioClip:
         ) * env * 0.22
         buf[idx:idx + L] += bass
 
-    # ── Chord pad (every 4 beats, 3-voice + subtle chorus detuning) ──────
+    # ── Chord pad ────────────────────────────────────────────────────────
     chord_prog = [
         [scale[0], scale[2], scale[4]],
         [scale[1], scale[3], scale[5]],
@@ -418,12 +389,12 @@ def generate_background_music(duration: float) -> AudioClip:
         env   = fi * fo
         for freq in chord:
             buf[idx:idx + L] += np.sin(2 * np.pi * freq * t_c) * env * 0.045
-            buf[idx:idx + L] += np.sin(2 * np.pi * freq * 1.0022 * t_c) * env * 0.018  # chorus
+            buf[idx:idx + L] += np.sin(2 * np.pi * freq * 1.0022 * t_c) * env * 0.018
 
-    # ── Melody (bell-like, pentatonic pattern) ────────────────────────────
+    # ── Melody ───────────────────────────────────────────────────────────
     mel_pat = [0, 2, 4, 2, 1, 3, 2, 0, 4, 2, 0, 3]
     for i in range(int(duration / beat) + 2):
-        freq = scale[mel_pat[i % len(mel_pat)]]          # upper register
+        freq = scale[mel_pat[i % len(mel_pat)]]
         idx  = int(i * beat * sr)
         L    = min(int(beat * 0.70 * sr), n - idx)
         if L <= 0:
@@ -437,15 +408,14 @@ def generate_background_music(duration: float) -> AudioClip:
         ) * env * 0.065
         buf[idx:idx + L] += mel
 
-    # ── Vinyl crackle (lofi character) ────────────────────────────────────
+    # ── Vinyl crackle ────────────────────────────────────────────────────
     buf += rng.standard_normal(n) * 0.0025
 
-    # ── Global fade in / out ──────────────────────────────────────────────
+    # ── Fades + normalize ────────────────────────────────────────────────
     fade = int(sr * 2.5)
     buf[:fade]  *= np.linspace(0, 1, fade)
     buf[-fade:] *= np.linspace(1, 0, fade)
 
-    # ── Normalize to safe headroom ────────────────────────────────────────
     peak = np.max(np.abs(buf))
     if peak > 1e-6:
         buf = buf / peak * 0.28
@@ -455,14 +425,14 @@ def generate_background_music(duration: float) -> AudioClip:
     def make_frame(t):
         t_a    = np.atleast_1d(np.asarray(t, dtype=float))
         idx    = np.clip((t_a * sr).astype(int), 0, n - 1)
-        frames = stereo[idx]                    # shape (N, 2)
+        frames = stereo[idx]
         return frames[0] if np.isscalar(t) else frames
 
     return AudioClip(make_frame, duration=duration, fps=sr)
 
 
 # ═══════════════════════════════════════════════════════════════
-#  STOCK FOOTAGE  (unchanged)
+#  STOCK FOOTAGE
 # ═══════════════════════════════════════════════════════════════
 
 def fetch_stock_clips(keywords: list, target_count: int = 5) -> list:
@@ -512,7 +482,7 @@ def fetch_stock_clips(keywords: list, target_count: int = 5) -> list:
 
 
 # ═══════════════════════════════════════════════════════════════
-#  MOTION HELPERS  (unchanged)
+#  MOTION HELPERS
 # ═══════════════════════════════════════════════════════════════
 
 def _motionize_clip(clip, seg_dur: float, seed: int):
@@ -640,14 +610,7 @@ def assemble_video(
         position=("center", 30),
     )
 
-    # ── Captions — FIX 3: clean, centered, no broken animations ──────────
-    #
-    #  The previous system applied set_position(lambda) inside
-    #  _apply_animation_effect() which silently overwrote the "center"
-    #  position, snapping text to (x, y) absolute with x≈0 → top-left corner.
-    #  resize(lambda) also re-anchored to top-left when scaling.
-    #  Solution: simple fade-in/out only. Looks clean and professional.
-    #
+    # ── Captions ─────────────────────────────────────────────────────────
     time_per_sent = total_dur / len(sentences)
     caption_clips = []
 
@@ -690,10 +653,10 @@ def assemble_video(
     layers = [background, overlay, brand_bar, brand_clip,
               *caption_clips, cta_bar, cta_clip]
 
-    # ── Audio mix: narration + lofi beat (FIX 2) ─────────────────────────
+    # ── Audio mix ─────────────────────────────────────────────────────────
     print("    🎵 Generating lofi background music...")
     bg_music      = generate_background_music(total_dur)
-    bg_audio      = bg_music.volumex(0.30)        # audible but below voice
+    bg_audio      = bg_music.volumex(0.30)
     narration_vol = narration.volumex(1.0)
     audio_mix     = CompositeAudioClip([narration_vol, bg_audio])
 
@@ -722,13 +685,12 @@ def assemble_video(
 
 
 # ═══════════════════════════════════════════════════════════════
-#  YOUTUBE UPLOAD  (unchanged)
+#  FIX 4 — YOUTUBE UPLOAD (CI-safe, base64 secrets, no browser)
 # ═══════════════════════════════════════════════════════════════
 
 def upload_to_youtube(video_path: Path, script_data: dict) -> str:
     from google.oauth2.credentials import Credentials
     from google.auth.transport.requests import Request
-    from google_auth_oauthlib.flow import InstalledAppFlow
     from googleapiclient.discovery import build
     from googleapiclient.http import MediaFileUpload
 
@@ -736,23 +698,39 @@ def upload_to_youtube(video_path: Path, script_data: dict) -> str:
     TOKEN  = Path("token.json")
     CLIENT = Path("client_secret.json")
 
+    # ── Write credential files from base64-encoded env vars ──────────────
+    if CLIENT_SECRET_JSON:
+        CLIENT.write_bytes(base64.b64decode(CLIENT_SECRET_JSON))
+    if TOKEN_JSON:
+        TOKEN.write_bytes(base64.b64decode(TOKEN_JSON))
+
     if not CLIENT.exists():
         raise FileNotFoundError(
-            "client_secret.json not found!\n"
-            "Download from Google Cloud Console → YouTube Data API"
+            "client_secret.json not found and CLIENT_SECRET_JSON env var is empty.\n"
+            "Add the base64-encoded contents as a GitHub secret."
         )
 
-    creds = None
-    if TOKEN.exists():
-        creds = Credentials.from_authorized_user_file(str(TOKEN), SCOPES)
+    if not TOKEN.exists():
+        raise FileNotFoundError(
+            "token.json not found and TOKEN_JSON env var is empty.\n"
+            "Run the OAuth flow locally once, then base64-encode token.json\n"
+            "and store it as the TOKEN_JSON GitHub secret."
+        )
+
+    # ── Load and refresh credentials (no browser needed in CI) ───────────
+    creds = Credentials.from_authorized_user_file(str(TOKEN), SCOPES)
+
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
+            creds.refresh(Request())          # uses refresh token — works headlessly
+            TOKEN.write_text(creds.to_json()) # update local copy (not persisted in CI)
         else:
-            flow  = InstalledAppFlow.from_client_secrets_file(str(CLIENT), SCOPES)
-            creds = flow.run_local_server(port=0)
-        TOKEN.write_text(creds.to_json())
+            raise RuntimeError(
+                "Token is missing, invalid, or has no refresh token.\n"
+                "Re-run the OAuth flow locally and update the TOKEN_JSON secret."
+            )
 
+    # ── Build YouTube client and upload ──────────────────────────────────
     yt   = build("youtube", "v3", credentials=creds)
     tags = script_data["tags"] + ["Shorts", "YouTubeShorts", NICHE.replace(" ", "")]
     desc = script_data["description"] + "\n\n#Shorts #YouTubeShorts " + " ".join(
@@ -767,7 +745,7 @@ def upload_to_youtube(video_path: Path, script_data: dict) -> str:
             "categoryId":  "27",
         },
         "status": {
-            "privacyStatus":          "public",
+            "privacyStatus":           "public",
             "selfDeclaredMadeForKids": False,
             "madeForKids":             False,
         },
