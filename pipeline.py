@@ -1,27 +1,25 @@
-# YouTube Shorts Auto-Pipeline (v2 — Natural Narration + Viral Script Edition)
-# =============================================================================
+# YouTube Shorts Auto-Pipeline (Fixed Edition)
+# ================================================
+# Fixes applied:
+#   ✅ FIX 1: TTS no longer reads [PAUSE]/[EXCITED]/[SERIOUS] etc.
+#             — All markers stripped via regex before TTS
+#             — SSML removed entirely (was unreliable with edge_tts)
 #
-#   ✅ Original fixes retained from v1:
-#       FIX 1: TTS markers stripped via regex before generation
-#       FIX 2: Procedural lofi background music (no external API)
-#       FIX 3: Clean fade-in/out captions (broken animation removed)
-#       FIX 4: CI-safe base64 OAuth (no browser needed)
+#   ✅ FIX 2: Real lofi background music, fully procedural (no API)
+#             — Kick drum, snare, hi-hat, bassline, chord pad, melody
+#             — Vinyl crackle for lofi character
+#             — Pixabay removed (required API key, was silently failing)
+#             — NOTE: YouTube's "Add Audio" in Studio is UI-only;
+#               the Data API v3 has no parameter for it — not possible via code
 #
-#   🆕 New in v2:
-#       IMPROVE 1 — NATURAL NARRATION
-#           • Sentence-by-sentence TTS generation (no more rushed single blob)
-#           • Controlled silence gaps between sentences via pause_hints
-#           • Pause types: hook(0.8s), tension(0.65s), pre_reveal(0.95s),
-#             reveal(0.7s), normal(0.42s), cta(0.0s)
-#           • TTS rate reduced from +8% → +3% (less rushed)
-#           • Returns exact sentence timestamps → perfectly synced captions
+#   ✅ FIX 3: Broken animation system removed entirely
+#             — set_position(lambda) was overriding centered position → top-corner bug
+#             — resize(lambda) was anchoring to top-left, not center
+#             — Replaced with clean fade-in/out captions (more professional)
 #
-#       IMPROVE 2 — VIRAL SCRIPT PROMPT
-#           • 9-line formula: hook→anchor→tension→facts→reveal→connection→cta
-#           • Banned weak words, power word list, hook templates
-#           • Each sentence gets a named role that drives TTS pause length
-#           • Title formula with power words + emoji
-#           • pause_hints field in JSON drives audio pacing automatically
+#   ✅ FIX 4: GitHub Actions / CI compatibility
+#             — client_secret.json and token.json written from base64-encoded env vars
+#             — Browser OAuth flow replaced with refresh-token-only path (no UI needed)
 #
 # Still 100% FREE — no new API keys required
 
@@ -65,8 +63,8 @@ from moviepy.video.fx.all import crop
 
 GROQ_API_KEY       = os.getenv("GROQ_API_KEY")
 PEXELS_API_KEY     = os.getenv("PEXELS_API_KEY")
-CLIENT_SECRET_JSON = os.getenv("CLIENT_SECRET_JSON")   # base64-encoded client_secret.json
-TOKEN_JSON         = os.getenv("TOKEN_JSON")            # base64-encoded token.json
+CLIENT_SECRET_JSON = os.getenv("CLIENT_SECRET_JSON")   # base64-encoded contents of client_secret.json
+TOKEN_JSON         = os.getenv("TOKEN_JSON")            # base64-encoded contents of token.json
 
 NICHE = "amazing science facts"
 
@@ -78,28 +76,8 @@ VOICE_CANDIDATES = [
     "en-AU-WilliamNeural",
 ]
 
-# ── TTS pacing ────────────────────────────────────────────────
-TTS_RATE   = "+3%"     # was +8% in v1 — less rushed, more human
-TTS_PITCH  = "-2Hz"    # slightly lower = more authoritative voice
-
-# ── Natural pause durations (seconds) per sentence role ──────
-PAUSE_HOOK        = 0.80   # after hook — let it land
-PAUSE_TENSION     = 0.65   # after tension line — build suspense
-PAUSE_PRE_REVEAL  = 0.95   # before the reveal — maximum suspense
-PAUSE_REVEAL      = 0.70   # after reveal — let it hit
-PAUSE_NORMAL      = 0.42   # standard between sentences
-PAUSE_CTA         = 0.00   # nothing after the final CTA
-
-PAUSE_MAP = {
-    "hook":       PAUSE_HOOK,
-    "tension":    PAUSE_TENSION,
-    "pre_reveal": PAUSE_PRE_REVEAL,
-    "reveal":     PAUSE_REVEAL,
-    "normal":     PAUSE_NORMAL,
-    "cta":        PAUSE_CTA,
-}
-
-SR_TTS = 44100   # sample rate for TTS audio stitching
+TTS_RATE   = "+8%"
+TTS_PITCH  = "-1Hz"
 
 WIDTH, HEIGHT = 1080, 1920
 FPS = 30
@@ -215,7 +193,7 @@ def _text_clip(
 
 
 # ═══════════════════════════════════════════════════════════════
-#  MARKER STRIPPING FOR TTS AND DISPLAY
+#  FIX 1 — MARKER STRIPPING FOR TTS AND DISPLAY
 # ═══════════════════════════════════════════════════════════════
 
 def _clean_for_tts(text: str) -> str:
@@ -233,7 +211,7 @@ def _clean_for_display(text: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════
-#  VOICEOVER — sentence-by-sentence with natural pauses
+#  VOICEOVER
 # ═══════════════════════════════════════════════════════════════
 
 async def _tts_async(text: str, path: Path, voice: str):
@@ -241,210 +219,65 @@ async def _tts_async(text: str, path: Path, voice: str):
     await communicate.save(str(path))
 
 
-def _audio_clip_to_array(clip: AudioFileClip) -> np.ndarray:
-    """Read an AudioFileClip into a (N, 2) float32 stereo numpy array."""
-    dur    = clip.duration
-    t      = np.arange(int(dur * SR_TTS)) / SR_TTS
-    frames = clip.get_frame(t)
-    if frames.ndim == 1:
-        frames = np.column_stack([frames, frames])
-    return frames.astype(np.float32)
+def generate_voiceover(script_lines: list, path: Path) -> str:
+    full_text = " ".join(line.strip() for line in script_lines if line.strip())
+    clean_text = _clean_for_tts(full_text)
 
-
-def _silence_array(duration_sec: float) -> np.ndarray:
-    """Return a (N, 2) float32 stereo silence array."""
-    n = max(1, int(duration_sec * SR_TTS))
-    return np.zeros((n, 2), dtype=np.float32)
-
-
-def generate_voiceover(script_data: dict, path: Path) -> tuple:
-    """
-    Generates natural-sounding TTS by processing each sentence individually,
-    then stitching with role-driven silence gaps between them.
-
-    Returns:
-        (voice_used: str, sentence_start_times: list[float])
-
-    The start times are exact timestamps (seconds) for each sentence in the
-    final audio file — used for perfectly synced captions in assemble_video().
-
-    Pause after each sentence is driven by pause_hints from the script JSON:
-        hook       → 0.80s  (let the hook land)
-        tension    → 0.65s  (build suspense)
-        pre_reveal → 0.95s  (maximum suspense before reveal line)
-        reveal     → 0.70s  (let the reveal hit)
-        normal     → 0.42s  (standard between sentences)
-        cta        → 0.00s  (end of video — no trailing silence)
-    """
-    sentences   = script_data["script"]
-    pause_hints = script_data.get("pause_hints", ["normal"] * len(sentences))
-
-    # Pad hints defensively if LLM returned fewer than sentences
-    while len(pause_hints) < len(sentences):
-        pause_hints.append("normal")
-
-    voices   = [VOICE] if VOICE != "AUTO" else VOICE_CANDIDATES
-    last_err = None
+    voices    = [VOICE] if VOICE != "AUTO" else VOICE_CANDIDATES
+    last_err  = None
 
     for voice in voices:
         try:
-            segments     = []
-            start_times  = []
-            current_time = 0.0
-
-            for i, sentence in enumerate(sentences):
-                clean = _clean_for_tts(sentence)
-                if not clean.strip():
-                    start_times.append(current_time)
-                    continue
-
-                # Generate TTS for this sentence alone
-                tmp = OUTPUT_DIR / f"_tmp_sent_{i}.mp3"
-                asyncio.run(_tts_async(clean, tmp, voice))
-
-                # Load, convert to numpy, close immediately to free memory
-                ac  = AudioFileClip(str(tmp))
-                arr = _audio_clip_to_array(ac)
-                ac.close()
-                tmp.unlink(missing_ok=True)
-
-                start_times.append(current_time)
-                segments.append(arr)
-                current_time += len(arr) / SR_TTS
-
-                # Add natural pause after this sentence (skip after last sentence)
-                if i < len(sentences) - 1:
-                    hint      = pause_hints[i]
-                    pause_dur = PAUSE_MAP.get(hint, PAUSE_NORMAL)
-                    if pause_dur > 0:
-                        segments.append(_silence_array(pause_dur))
-                        current_time += pause_dur
-
-            # Stitch all sentence audio + pauses into one contiguous array
-            full_audio = np.concatenate(segments, axis=0)
-            total_dur  = len(full_audio) / SR_TTS
-
-            # Write to the output path via a temporary AudioClip
-            def make_frame(t):
-                t_a = np.atleast_1d(np.asarray(t, dtype=float))
-                idx = np.clip((t_a * SR_TTS).astype(int), 0, len(full_audio) - 1)
-                return full_audio[idx] if t_a.shape[0] > 1 else full_audio[idx[0]]
-
-            out_clip = AudioClip(make_frame, duration=total_dur, fps=SR_TTS)
-            out_clip.write_audiofile(str(path), fps=SR_TTS, verbose=False, logger=None)
-            out_clip.close()
-
-            print(f"    ✅ Voice: {voice} | {len(sentences)} sentences | {total_dur:.1f}s total")
-            return voice, start_times
-
+            asyncio.run(_tts_async(clean_text, path, voice))
+            print(f"    ✅ Voice: {voice}")
+            return voice
         except Exception as e:
             last_err = e
-            print(f"    ⚠ Voice failed: {voice} — {e}")
-            for tmp in OUTPUT_DIR.glob("_tmp_sent_*.mp3"):
-                tmp.unlink(missing_ok=True)
+            print(f"    ⚠ Voice failed: {voice}")
 
     raise RuntimeError(f"All TTS voices failed: {last_err}")
 
 
 # ═══════════════════════════════════════════════════════════════
-#  SCRIPT GENERATION — viral 9-line formula
+#  SCRIPT GENERATION
 # ═══════════════════════════════════════════════════════════════
 
 def generate_script() -> dict:
-    used      = json.loads(TOPICS_LOG.read_text()) if TOPICS_LOG.exists() else []
-    avoid_str = ", ".join(used[-40:]) if used else "none"
+    used       = json.loads(TOPICS_LOG.read_text()) if TOPICS_LOG.exists() else []
+    avoid_str  = ", ".join(used[-40:]) if used else "none"
 
-    prompt = f"""You are the world's top viral YouTube Shorts scriptwriter for {NICHE}.
-Your videos average 2M+ views. You deeply understand dopamine loops, curiosity gaps, and scroll psychology.
+    prompt = f"""You are a viral YouTube Shorts scriptwriter specializing in {NICHE}.
 
-CHANNEL NICHE: {NICHE}
-AVOID (already used): {avoid_str}
+Write a HIGHLY ENGAGING, PUNCHY YouTube Short script optimized for retention.
 
-════ THE 9-LINE VIRAL FORMULA ════
-Each line has a fixed ROLE. Never swap them.
+Rules:
+1. Exactly 7-9 short punchy sentences.
+2. First sentence MUST be a shocking hook that stops scrolling.
+3. Every sentence under 14 words.
+4. Use curiosity gaps, concrete shocking details, fast pacing.
+5. Easy to narrate naturally in 20-40 seconds.
+6. Final sentence: Follow for a new fact every hour!
+7. Avoid these topics: {avoid_str}
 
-Line 1  HOOK        — Stops the scroll. One shocking claim. Counter-intuitive, forbidden, or paradoxical.
-Line 2  ANCHOR      — Back it up fast. A real number, institution, or date. Builds credibility instantly.
-Line 3  TENSION     — "But here's where it gets insane..." Opens a new curiosity gap immediately.
-Line 4  FACT 1      — First layer of the core revelation. Concrete and specific.
-Line 5  FACT 2      — Escalate. More specific and more surprising than line 4.
-Line 6  FACT 3      — The deepest cut. The detail almost nobody knows.
-Line 7  REVEAL      — The punchline or holy-sh*t moment. Most jaw-dropping sentence in the script.
-Line 8  CONNECTION  — Make it personal. Connect to the viewer's body, daily life, or immediate surroundings.
-Line 9  CTA         — "Follow for a mind-blowing fact every day!"
-
-════ SENTENCE RULES ════
-- MAX 11 words per sentence. Under 7 words = power punch — use them often.
-- RHYTHM alternates: Short. Medium sentence that builds. Short. LONGER REVEAL. Short.
-- Start at least 3 sentences with a number or a shocking stat.
-- BANNED WORDS (too vague/weak): fascinating, interesting, amazing, incredible, unbelievable, simply, remarkable
-- USE INSTEAD: exact numbers, specific names, named scientists/institutions, concrete comparisons, precise dates
-- Every sentence must make the viewer MORE curious than the one before.
-- The hook must work if shown alone as a thumbnail quote.
-- Each sentence under 11 words — if it is longer, split it.
-
-════ HOOK TEMPLATES — pick the strongest for this topic ════
-• "You've been [doing X] wrong your entire life."
-• "In [N seconds/minutes], [shocking thing] happens inside your [body/brain/home]."
-• "Scientists at [real institution] found something that breaks [a rule everyone knows]."
-• "[Famous/common thing] is actually [the shocking opposite of what people believe]."
-• "[N]% of people will never know this about [subject]."
-• "This [object/fact] was [banned/hidden/classified] until [specific year]."
-• "[Shocking number] of [things] [verb] every [time unit]. Nobody talks about it."
-
-════ PAUSE HINTS — one per sentence, drives audio pacing ════
-These values control the silence gap inserted AFTER each sentence in the final audio:
-  hook        → 0.80s (let the hook land — most important gap in the video)
-  tension     → 0.65s (suspense before the next revelation)
-  pre_reveal  → 0.95s (use this on the sentence BEFORE line 7 — maximum suspense)
-  reveal      → 0.70s (let the reveal land before moving on)
-  normal      → 0.42s (standard conversational gap)
-  cta         → 0.00s (end of video — no trailing silence needed)
-
-Default pattern: ["hook","normal","tension","normal","normal","pre_reveal","reveal","normal","cta"]
-You may adjust if the script rhythm demands it, but keep "hook" first and "cta" last.
-
-════ TITLE FORMULA ════
-Structure: [Power word] + [Subject] + [Verb] + [Shocking outcome]
-Power words to use: Secret, Hidden, Banned, Never, Actually, Real, Deadly, Illegal, Impossible, Disturbing
-Must contain: 1 exact number OR 1 power word, 1-2 relevant emojis, under 58 characters total.
-
-BAD TITLE: "Amazing Ocean Facts 🌊"  ← too generic, no hook
-GOOD TITLE: "The Ocean Sound That Kills Instantly 🌊💀"  ← specific, shocking, curiosity gap
-
-════ DESCRIPTION ════
-Under 200 characters. Punchy. Include 2-3 searchable keywords naturally. End with a question or hook.
-
-Return ONLY valid JSON — no markdown fences, no preamble, no trailing text:
+Return ONLY valid JSON (no markdown, no code fences):
 {{
-  "title": "power-word title with 1-2 emojis, under 58 chars",
+  "title": "catchy title with emoji, under 60 chars",
   "topic": "3-word topic",
-  "hook": "line 1 verbatim",
-  "script": [
-    "line1 (hook)",
-    "line2 (anchor)",
-    "line3 (tension)",
-    "line4 (fact 1)",
-    "line5 (fact 2)",
-    "line6 (fact 3)",
-    "line7 (reveal)",
-    "line8 (connection)",
-    "line9 (cta)"
-  ],
-  "pause_hints": ["hook","normal","tension","normal","normal","pre_reveal","reveal","normal","cta"],
+  "hook": "sentence 1",
+  "script": ["sentence1", "sentence2", ...],
   "search_keywords": ["keyword1", "keyword2", "keyword3"],
-  "description": "punchy YT description with keywords, under 200 chars",
-  "tags": ["tag1","tag2","tag3","tag4","tag5"]
+  "description": "engaging YT description under 200 chars with keywords",
+  "tags": ["tag1", "tag2", "tag3", "tag4", "tag5"]
 }}"""
 
     resp = requests.post(
         "https://api.groq.com/openai/v1/chat/completions",
         headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
         json={
-            "model":       "llama-3.3-70b-versatile",
-            "messages":    [{"role": "user", "content": prompt}],
-            "temperature": 0.85,
-            "max_tokens":  1100,
+            "model": "llama-3.3-70b-versatile",
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.88,
+            "max_tokens": 900,
         },
         timeout=30,
     )
@@ -464,7 +297,7 @@ Return ONLY valid JSON — no markdown fences, no preamble, no trailing text:
 
 
 # ═══════════════════════════════════════════════════════════════
-#  PROCEDURAL LOFI BACKGROUND MUSIC
+#  FIX 2 — PROCEDURAL LOFI BACKGROUND MUSIC
 # ═══════════════════════════════════════════════════════════════
 
 def generate_background_music(duration: float) -> AudioClip:
@@ -480,7 +313,7 @@ def generate_background_music(duration: float) -> AudioClip:
 
     rng = np.random.default_rng(random.randint(0, 99999))
 
-    # ── Kick drum (beats 1 & 3) ───────────────────────────────────────────
+    # ── Kick drum (beats 1 & 3) ──────────────────────────────────────────
     for i in range(int(duration / beat) + 2):
         if i % 4 not in [0, 2]:
             continue
@@ -488,13 +321,13 @@ def generate_background_music(duration: float) -> AudioClip:
         L   = min(int(0.28 * sr), n - idx)
         if L <= 0:
             continue
-        t_k   = np.arange(L) / sr
-        f_env = 80 * np.exp(-t_k * 30) + 36
-        phase = 2 * np.pi * np.cumsum(f_env) / sr
-        kick  = np.sin(phase) * np.exp(-t_k * 13) * 0.40
+        t_k    = np.arange(L) / sr
+        f_env  = 80 * np.exp(-t_k * 30) + 36
+        phase  = 2 * np.pi * np.cumsum(f_env) / sr
+        kick   = np.sin(phase) * np.exp(-t_k * 13) * 0.40
         buf[idx:idx + L] += kick
 
-    # ── Snare (beats 2 & 4) ──────────────────────────────────────────────
+    # ── Snare (beats 2 & 4) ─────────────────────────────────────────────
     for i in range(int(duration / beat) + 2):
         if i % 4 not in [1, 3]:
             continue
@@ -508,18 +341,18 @@ def generate_background_music(duration: float) -> AudioClip:
         env   = np.exp(-t_s * 28)
         buf[idx:idx + L] += (0.55 * noise + 0.45 * tone) * env * 0.18
 
-    # ── Hi-hat (8th notes) ───────────────────────────────────────────────
+    # ── Hi-hat (8th notes) ──────────────────────────────────────────────
     eighth = beat / 2
     for i in range(int(duration / eighth) + 2):
         idx = int(i * eighth * sr)
         L   = min(int(0.05 * sr), n - idx)
         if L <= 0:
             continue
-        t_h = np.arange(L) / sr
-        vol = 0.07 if i % 2 == 0 else 0.035
+        t_h  = np.arange(L) / sr
+        vol  = 0.07 if i % 2 == 0 else 0.035
         buf[idx:idx + L] += rng.standard_normal(L) * np.exp(-t_h * 110) * vol
 
-    # ── Bass line ─────────────────────────────────────────────────────────
+    # ── Bass line ────────────────────────────────────────────────────────
     bass_pat = [scale[0] / 2, scale[0] / 2, scale[2] / 2, scale[1] / 2,
                 scale[0] / 2, scale[3] / 2, scale[1] / 2, scale[0] / 2]
     for i in range(int(duration / beat) + 2):
@@ -536,7 +369,7 @@ def generate_background_music(duration: float) -> AudioClip:
         ) * env * 0.22
         buf[idx:idx + L] += bass
 
-    # ── Chord pad ─────────────────────────────────────────────────────────
+    # ── Chord pad ────────────────────────────────────────────────────────
     chord_prog = [
         [scale[0], scale[2], scale[4]],
         [scale[1], scale[3], scale[5]],
@@ -550,15 +383,15 @@ def generate_background_music(duration: float) -> AudioClip:
         L     = min(int(chord_dur * sr), n - idx)
         if L <= 0:
             continue
-        t_c = np.arange(L) / sr
-        fi  = np.clip(t_c / 0.35, 0, 1)
-        fo  = np.clip((chord_dur - t_c) / 0.45, 0, 1)
-        env = fi * fo
+        t_c   = np.arange(L) / sr
+        fi    = np.clip(t_c / 0.35, 0, 1)
+        fo    = np.clip((chord_dur - t_c) / 0.45, 0, 1)
+        env   = fi * fo
         for freq in chord:
             buf[idx:idx + L] += np.sin(2 * np.pi * freq * t_c) * env * 0.045
             buf[idx:idx + L] += np.sin(2 * np.pi * freq * 1.0022 * t_c) * env * 0.018
 
-    # ── Melody ────────────────────────────────────────────────────────────
+    # ── Melody ───────────────────────────────────────────────────────────
     mel_pat = [0, 2, 4, 2, 1, 3, 2, 0, 4, 2, 0, 3]
     for i in range(int(duration / beat) + 2):
         freq = scale[mel_pat[i % len(mel_pat)]]
@@ -566,19 +399,19 @@ def generate_background_music(duration: float) -> AudioClip:
         L    = min(int(beat * 0.70 * sr), n - idx)
         if L <= 0:
             continue
-        t_m = np.arange(L) / sr
-        env = np.exp(-t_m * 8.5) * (1 - np.exp(-t_m * 45))
-        mel = (
+        t_m  = np.arange(L) / sr
+        env  = np.exp(-t_m * 8.5) * (1 - np.exp(-t_m * 45))
+        mel  = (
             np.sin(2 * np.pi * freq * t_m) * 0.55
             + np.sin(2 * np.pi * freq * 2 * t_m) * 0.30
             + np.sin(2 * np.pi * freq * 3 * t_m) * 0.15
         ) * env * 0.065
         buf[idx:idx + L] += mel
 
-    # ── Vinyl crackle ─────────────────────────────────────────────────────
+    # ── Vinyl crackle ────────────────────────────────────────────────────
     buf += rng.standard_normal(n) * 0.0025
 
-    # ── Fades + normalize ─────────────────────────────────────────────────
+    # ── Fades + normalize ────────────────────────────────────────────────
     fade = int(sr * 2.5)
     buf[:fade]  *= np.linspace(0, 1, fade)
     buf[-fade:] *= np.linspace(1, 0, fade)
@@ -703,8 +536,8 @@ def _motionize_clip(clip, seg_dur: float, seed: int):
 
 
 def _fit_to_916(clip):
-    cw, ch = clip.size
-    target = WIDTH / HEIGHT
+    cw, ch  = clip.size
+    target  = WIDTH / HEIGHT
     if cw / ch > target:
         clip = crop(clip, width=int(ch * target), height=ch, x_center=cw / 2)
     else:
@@ -713,7 +546,7 @@ def _fit_to_916(clip):
 
 
 # ═══════════════════════════════════════════════════════════════
-#  VIDEO ASSEMBLY — captions now use exact sentence timestamps
+#  VIDEO ASSEMBLY
 # ═══════════════════════════════════════════════════════════════
 
 def assemble_video(
@@ -721,7 +554,6 @@ def assemble_video(
     audio_path: Path,
     stock_paths: list,
     output_path: Path,
-    sentence_start_times: list,   # exact timestamps from generate_voiceover()
 ):
     narration  = AudioFileClip(str(audio_path))
     total_dur  = narration.duration
@@ -778,33 +610,26 @@ def assemble_video(
         position=("center", 30),
     )
 
-    # ── Captions — timed to actual sentence durations ─────────────────────
-    # Uses exact timestamps from generate_voiceover() instead of equal-time
-    # guessing, so captions flash precisely when each sentence is spoken.
+    # ── Captions ─────────────────────────────────────────────────────────
+    time_per_sent = total_dur / len(sentences)
     caption_clips = []
 
     for i, sentence in enumerate(sentences):
         display_text = _clean_for_display(sentence)
-        font_size    = 74 if i == 0 else 62
+        font_size    = 72 if i == 0 else 62
         base_y       = HEIGHT // 2 - 120
-
-        t_start = sentence_start_times[i] if i < len(sentence_start_times) else 0.0
-        t_end   = (sentence_start_times[i + 1]
-                   if i + 1 < len(sentence_start_times)
-                   else total_dur)
-        dur = max(t_end - t_start, 0.3)   # at least 0.3s visible
 
         cap = _text_clip(
             display_text,
-            duration=dur,
+            duration=time_per_sent,
             font_size=font_size,
             text_color=(255, 255, 255),
             stroke_color=(0, 0, 0),
             stroke_width=4,
             position=("center", base_y),
-            start=t_start,
+            start=i * time_per_sent,
         )
-        cap = cap.fx(vfx.fadein, 0.06).fx(vfx.fadeout, 0.06)
+        cap = cap.fx(vfx.fadein, 0.08).fx(vfx.fadeout, 0.08)
         caption_clips.append(cap)
 
     # ── Bottom CTA bar ────────────────────────────────────────────────────
@@ -816,7 +641,7 @@ def assemble_video(
         .set_duration(total_dur)
     )
     cta_clip = _text_clip(
-        "FOLLOW for a new fact every day!",
+        "FOLLOW for a new fact every hour!",
         duration=total_dur,
         font_size=44,
         text_color=(255, 255, 255),
@@ -860,7 +685,7 @@ def assemble_video(
 
 
 # ═══════════════════════════════════════════════════════════════
-#  YOUTUBE UPLOAD (CI-safe, base64 secrets, no browser)
+#  FIX 4 — YOUTUBE UPLOAD (CI-safe, base64 secrets, no browser)
 # ═══════════════════════════════════════════════════════════════
 
 def upload_to_youtube(video_path: Path, script_data: dict) -> str:
@@ -873,7 +698,7 @@ def upload_to_youtube(video_path: Path, script_data: dict) -> str:
     TOKEN  = Path("token.json")
     CLIENT = Path("client_secret.json")
 
-    # Write credential files from base64-encoded env vars
+    # ── Write credential files from base64-encoded env vars ──────────────
     if CLIENT_SECRET_JSON:
         CLIENT.write_bytes(base64.b64decode(CLIENT_SECRET_JSON))
     if TOKEN_JSON:
@@ -884,6 +709,7 @@ def upload_to_youtube(video_path: Path, script_data: dict) -> str:
             "client_secret.json not found and CLIENT_SECRET_JSON env var is empty.\n"
             "Add the base64-encoded contents as a GitHub secret."
         )
+
     if not TOKEN.exists():
         raise FileNotFoundError(
             "token.json not found and TOKEN_JSON env var is empty.\n"
@@ -891,19 +717,20 @@ def upload_to_youtube(video_path: Path, script_data: dict) -> str:
             "and store it as the TOKEN_JSON GitHub secret."
         )
 
-    # Load and refresh credentials (no browser needed in CI)
+    # ── Load and refresh credentials (no browser needed in CI) ───────────
     creds = Credentials.from_authorized_user_file(str(TOKEN), SCOPES)
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-            TOKEN.write_text(creds.to_json())
+            creds.refresh(Request())          # uses refresh token — works headlessly
+            TOKEN.write_text(creds.to_json()) # update local copy (not persisted in CI)
         else:
             raise RuntimeError(
                 "Token is missing, invalid, or has no refresh token.\n"
                 "Re-run the OAuth flow locally and update the TOKEN_JSON secret."
             )
 
+    # ── Build YouTube client and upload ──────────────────────────────────
     yt   = build("youtube", "v3", credentials=creds)
     tags = script_data["tags"] + ["Shorts", "YouTubeShorts", NICHE.replace(" ", "")]
     desc = script_data["description"] + "\n\n#Shorts #YouTubeShorts " + " ".join(
@@ -924,8 +751,8 @@ def upload_to_youtube(video_path: Path, script_data: dict) -> str:
         },
     }
 
-    media    = MediaFileUpload(str(video_path), chunksize=-1, resumable=True)
-    request  = yt.videos().insert(part=",".join(body.keys()), body=body, media_body=media)
+    media   = MediaFileUpload(str(video_path), chunksize=-1, resumable=True)
+    request = yt.videos().insert(part=",".join(body.keys()), body=body, media_body=media)
     response = None
     while response is None:
         status, response = request.next_chunk()
@@ -942,63 +769,50 @@ def upload_to_youtube(video_path: Path, script_data: dict) -> str:
 # ═══════════════════════════════════════════════════════════════
 
 def run_pipeline(upload: bool = True):
-    ts         = datetime.now().strftime("%Y%m%d_%H%M%S")
-    audio_path = OUTPUT_DIR / f"voice_{ts}.mp3"
-    video_path = OUTPUT_DIR / f"short_{ts}.mp4"
+    ts          = datetime.now().strftime("%Y%m%d_%H%M%S")
+    audio_path  = OUTPUT_DIR / f"voice_{ts}.mp3"
+    video_path  = OUTPUT_DIR / f"short_{ts}.mp4"
 
     print(f"\n{'═' * 60}")
-    print(f"🎬  YouTube Shorts Pipeline v2 — {ts}")
+    print(f"🎬  YouTube Shorts Pipeline (Fixed) — {ts}")
     print(f"{'═' * 60}")
 
     try:
-        # ── Step 1: Generate script ───────────────────────────────────────
-        print("\n📝  Generating viral script (9-line formula)...")
+        print("\n📝  Generating script...")
         data = generate_script()
         print(f"    Title : {data['title']}")
         print(f"    Topic : {data['topic']}")
         print(f"    Hook  : {data['hook'][:70]}...")
-        print(f"    Pauses: {data.get('pause_hints', [])}")
 
-        # ── Step 2: Generate voiceover ────────────────────────────────────
-        print("\n🎙   Generating voiceover (sentence-by-sentence, natural pacing)...")
-        voice_used, sent_times = generate_voiceover(data, audio_path)
-        print(f"    Saved : {audio_path}")
-        print(f"    Caption timestamps: {[f'{t:.2f}s' for t in sent_times]}")
+        print("\n🎙   Generating voiceover (clean text, no markers)...")
+        voice_used = generate_voiceover(data["script"], audio_path)
+        print(f"    Saved : {audio_path}  |  Voice: {voice_used}")
 
-        # ── Step 3: Fetch stock footage ───────────────────────────────────
         print("\n🎥  Fetching stock footage (Pexels)...")
         clips = fetch_stock_clips(data["search_keywords"], target_count=6)
         print(f"    Got {len(clips)} clips")
 
-        # ── Step 4: Assemble video ────────────────────────────────────────
         print("\n🎞   Assembling video...")
-        assemble_video(data, audio_path, clips, video_path, sent_times)
+        assemble_video(data, audio_path, clips, video_path)
         print(f"    Saved : {video_path}")
 
-        # ── Step 5: Upload ────────────────────────────────────────────────
         vid_id = None
         if upload:
             print("\n📤  Uploading to YouTube...")
             vid_id = upload_to_youtube(video_path, data)
 
-        # ── Log result ────────────────────────────────────────────────────
         logs = json.loads(UPLOAD_LOG.read_text()) if UPLOAD_LOG.exists() else []
         logs.append({
-            "timestamp":   ts,
-            "title":       data["title"],
-            "topic":       data["topic"],
-            "voice":       voice_used,
-            "duration_s":  round(sent_times[-1], 2) if sent_times else None,
-            "video_id":    vid_id,
-            "file":        str(video_path),
+            "timestamp": ts,
+            "title":     data["title"],
+            "video_id":  vid_id,
+            "file":      str(video_path),
         })
         UPLOAD_LOG.write_text(json.dumps(logs, indent=2))
 
-        # ── Cleanup temp files ────────────────────────────────────────────
+        # Cleanup temp files
         audio_path.unlink(missing_ok=True)
         for p in OUTPUT_DIR.glob("stock_*.mp4"):
-            p.unlink(missing_ok=True)
-        for p in OUTPUT_DIR.glob("_tmp_sent_*.mp3"):
             p.unlink(missing_ok=True)
 
         print(f"\n🎉  Done! → {video_path.name}")
@@ -1009,9 +823,6 @@ def run_pipeline(upload: bool = True):
         print(f"\n❌  Pipeline failed: {e}")
         import traceback
         traceback.print_exc()
-        # Cleanup any leftover temp sentence files
-        for p in OUTPUT_DIR.glob("_tmp_sent_*.mp3"):
-            p.unlink(missing_ok=True)
         raise
 
 
