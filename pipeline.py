@@ -62,8 +62,6 @@ NICHE = "amazing science facts"
 # Kokoro voices — all Apache 2.0, all free for commercial use
 # af_ = American Female, am_ = American Male, bf_ = British Female, bm_ = British Male
 KOKORO_VOICES = [
-    ("af_heart",   "a"),   # American Female — warm, natural
-    ("af_bella",   "a"),   # American Female — clear
     ("am_michael", "a"),   # American Male   — authoritative
     ("bm_george",  "b"),   # British Male    — deep, trustworthy
 ]
