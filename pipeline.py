@@ -66,7 +66,6 @@ KOKORO_VOICES = [
     ("af_bella",   "a"),   # American Female — clear
     ("am_michael", "a"),   # American Male   — authoritative
     ("bm_george",  "b"),   # British Male    — deep, trustworthy
-    ("bf_emma",    "b"),   # British Female  — professional
 ]
 TTS_SPEED = 1.10   # slightly faster feels energetic for Shorts
 
