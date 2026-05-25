@@ -41,6 +41,7 @@ jobs:
           TOKEN_JSON: ${{ secrets.TOKEN_JSON }}
 
       - name: Run pipeline
+        continue-on-error: true
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
