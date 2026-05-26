@@ -270,13 +270,12 @@ def generate_script() -> dict:
 Write a HIGHLY ENGAGING, PUNCHY YouTube Short script optimized for retention.
 
 Rules:
-1. Exactly 7-9 short punchy sentences.
-2. First sentence MUST be a shocking hook that stops scrolling.
-3. Every sentence under 14 words.
-4. Use curiosity gaps, concrete shocking details, fast pacing.
-5. Easy to narrate naturally in 20-40 seconds.
-6. Final sentence: Follow for a new fact every hour!
-7. Avoid these topics: {avoid_str}
+1. Exactly 1 shocking core fact.
+2. 2-3 supporting/elaborating sentences that expand on that single fact.
+3. Use curiosity gaps, concrete shocking details.
+4. Easy to narrate naturally in 20-40 seconds.
+5. Final sentence: Follow for a new fact every hour!
+6. Avoid these topics: {avoid_str}
 
 Return ONLY valid JSON (no markdown, no code fences):
 {{
