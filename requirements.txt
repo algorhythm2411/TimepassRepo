@@ -10,4 +10,5 @@ imageio-ffmpeg>=0.4.9
 kokoro
 soundfile
 numpy
+click
 google-auth-httplib2
