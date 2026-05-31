@@ -1,4 +1,4 @@
-name: Main Channel — 3x/day (Psych · Money · History)
+name: Shorts Automation Pipeline
 
 on:
   schedule:
