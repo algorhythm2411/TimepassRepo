@@ -67,9 +67,14 @@ PEXELS_API_KEY      = os.getenv("PEXELS_API_KEY")
 CLIENT_SECRET_JSON  = os.getenv("CLIENT_SECRET_JSON")   # base64 of client_secret.json
 TOKEN_JSON          = os.getenv("TOKEN_JSON")            # base64 of token.json
 
-# U5: Each GitHub Actions workflow passes its own NICHE.
-# Default fallback keeps local runs working.
-NICHE = os.getenv("NICHE", "amazing science facts")
+# Niche is picked randomly each run from the three highest-performing categories.
+# Override by setting the NICHE env var (e.g. in a workflow or locally).
+_NICHE_POOL = [
+    "mind-blowing psychology facts",
+    "shocking money and finance secrets",
+    "dark history facts nobody teaches",
+]
+NICHE = os.getenv("NICHE") or random.choice(_NICHE_POOL)
 
 VOICE = "AUTO"
 VOICE_CANDIDATES = [
