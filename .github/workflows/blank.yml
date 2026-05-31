@@ -1,62 +1,50 @@
-name: Auto Shorts Pipeline
+name: Main Channel — 3x/day (Psych · Money · History)
 
 on:
-  workflow_dispatch:
   schedule:
     - cron: "*/15 * * * *"
+  workflow_dispatch:        # manual trigger anytime
 
 jobs:
-  shorts:
+  run-pipeline:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    timeout-minutes: 25
+
+    # NICHE is NOT set here — pipeline.py picks one randomly each run
+    env:
+      GROQ_API_KEY:        ${{ secrets.GROQ_API_KEY }}
+      PEXELS_API_KEY:      ${{ secrets.PEXELS_API_KEY }}
+      CLIENT_SECRET_JSON:  ${{ secrets.CLIENT_SECRET_JSON }}
+      TOKEN_JSON:          ${{ secrets.TOKEN_JSON }}
 
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+
       - name: Install system dependencies
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y ffmpeg fonts-dejavu-core
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg libsm6 libxext6 fonts-dejavu-core
 
       - name: Install Python dependencies
-        run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Recreate client_secret.json
-        run: echo "$CLIENT_SECRET_JSON" | base64 --decode > client_secret.json
-        env:
-          CLIENT_SECRET_JSON: ${{ secrets.CLIENT_SECRET_JSON }}
-
-      - name: Recreate token.json
-        run: echo "$TOKEN_JSON" | base64 --decode > token.json
-        env:
-          TOKEN_JSON: ${{ secrets.TOKEN_JSON }}
+        run: pip install -r requirements.txt pytrends --quiet
 
       - name: Run pipeline
-        continue-on-error: true
-        env:
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
         run: python pipeline.py
-      - name: Upload shorts as artifacts
+
+      - name: Upload log artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: shorts-${{ github.run_id }}
-          path: shorts_output/*.mp4
-          retention-days: 90
-      - name: Commit updated logs
-        run: |
-          git config --global user.name "github-actions"
-          git config --global user.email "actions@github.com"
-          git add used_topics.json upload_log.json 2>/dev/null || true
-          git commit -m "chore: update logs [skip ci]" || echo "No changes to commit"
-          git push
+          name: upload-log-${{ github.run_id }}
+          path: upload_log.json
+          retention-days: 30
