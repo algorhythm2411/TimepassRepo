@@ -1,17 +1,17 @@
-# YouTube Shorts Auto-Pipeline (Fully Legal Edition)
-# =====================================================
+# YouTube Shorts Auto-Pipeline (Fully Legal Edition — Multi-Niche Rotation)
+# =========================================================================
 # LEGAL CHECKLIST:
-#   ✅ Kokoro TTS         — Apache 2.0, free commercial use (replaces Edge TTS)
+#   ✅ Kokoro TTS         — Apache 2.0, free commercial use
 #   ✅ Pexels footage     — Free for commercial use, no attribution required
 #   ✅ LLaMA 3.3 / Groq   — Meta commercial license OK under 700M MAU
 #   ✅ Procedural music   — 100% original, no samples, no copyright
-#   ✅ YouTube disclosure — AI label added via API + disclosure in description
+#   ✅ YouTube disclosure — AI label added via description
 #   ✅ Output audio       — .wav (lossless, no encoder license issues)
 #
 # INSTALL:
 #   pip install kokoro soundfile numpy pillow moviepy requests \
 #               google-api-python-client google-auth-httplib2 google-auth-oauthlib
-#   Linux extra: sudo apt-get install espeak-ng   (Kokoro phonemizer dependency)
+#   Linux extra: sudo apt-get install espeak-ng
 #   macOS extra: brew install espeak-ng
 
 import os
@@ -32,7 +32,7 @@ if not hasattr(PIL.Image, "ANTIALIAS"):
     PIL.Image.ANTIALIAS = PIL.Image.LANCZOS
 
 from PIL import Image, ImageDraw, ImageFont
-from kokoro import KPipeline                          # Apache 2.0 — commercial OK
+from kokoro import KPipeline
 
 from moviepy.editor import (
     VideoFileClip,
@@ -57,15 +57,90 @@ PEXELS_API_KEY     = os.getenv("PEXELS_API_KEY")
 CLIENT_SECRET_JSON = os.getenv("CLIENT_SECRET_JSON")  # base64-encoded
 TOKEN_JSON         = os.getenv("TOKEN_JSON")           # base64-encoded
 
-NICHE = "amazing science facts"
-
-# Kokoro voices — all Apache 2.0, all free for commercial use
-# af_ = American Female, am_ = American Male, bf_ = British Female, bm_ = British Male
-KOKORO_VOICES = [
-    ("am_michael", "a"),   # American Male   — authoritative
-    ("bm_george",  "b"),   # British Male    — deep, trustworthy
+# ── NICHE POOL ─────────────────────────────────────────────────
+# Each entry: (niche_id, display_name, tone_note, weight)
+# weight controls how often it gets picked (higher = more frequent)
+NICHE_POOL = [
+    (
+        "psychology",
+        "mind-bending psychology facts",
+        "Focus on cognitive biases, manipulation tactics, dark social psychology, "
+        "memory illusions, and group behaviour. Examples: Dunning-Kruger, bystander "
+        "effect, false memory implantation, conformity experiments. "
+        "Lead with the human consequence, not the lab finding.",
+        3,
+    ),
+    (
+        "history",
+        "shocking history facts nobody taught you",
+        "Focus on lost civilisations, historical reversals, forgotten atrocities, "
+        "bizarre laws, unexpected inventors, and empire collapses. "
+        "Must include a specific year or named person. No vague 'ancient times' claims.",
+        3,
+    ),
+    (
+        "science",
+        "counterintuitive science facts",
+        "Physics paradoxes, chemistry surprises, biology weirdness. "
+        "Must defy common intuition — lead with the surprise first. "
+        "Include a concrete number or measurement wherever possible.",
+        3,
+    ),
+    (
+        "finance",
+        "wealth and money secrets they never taught you",
+        "How rich people actually build wealth, hidden mechanics of banks and inflation, "
+        "legal tax strategies, compound interest edge cases, historical wealth transfers. "
+        "Keep it factual — no get-rich-quick framing.",
+        2,
+    ),
+    (
+        "rare_events",
+        "rare and extreme events that actually happened",
+        "Near-extinction events, 1-in-a-billion coincidences, disasters averted by "
+        "seconds, accidental discoveries, record-breaking natural phenomena, "
+        "and statistical impossibilities that occurred. Must be a real documented event.",
+        2,
+    ),
+    (
+        "human_body",
+        "insane facts about the human body",
+        "Anatomy surprises, what happens during death/sleep/fear/extreme cold, "
+        "medical anomalies, record-holding biological feats, sensory illusions. "
+        "Keep accurate — absolutely no pseudoscience or wellness myths.",
+        2,
+    ),
+    (
+        "technology",
+        "hidden technology facts that will change how you see the world",
+        "Secret systems running the internet, GPS/banking/power grid fragility, "
+        "algorithms manipulating behaviour, tech disasters avoided by luck, "
+        "unintended consequences of major inventions.",
+        2,
+    ),
+    (
+        "nature",
+        "extreme nature facts that sound fake but are real",
+        "Organisms with impossible abilities, geological extremes, animal survival "
+        "strategies that defy logic, ecosystem collapse and recovery, "
+        "and evolutionary accidents. Must be a real species or documented phenomenon.",
+        1,
+    ),
 ]
-TTS_SPEED = 1.10   # slightly faster feels energetic for Shorts
+
+# Derived weights for sampling
+_NICHE_WEIGHTS = [w for _, _, _, w in NICHE_POOL]
+_NICHE_TOTAL   = sum(_NICHE_WEIGHTS)
+
+# Runtime variable — updated each run to match chosen niche
+NICHE = NICHE_POOL[0][1]
+
+# Kokoro voices — Apache 2.0, free for commercial use
+KOKORO_VOICES = [
+    ("am_michael", "a"),   # American Male — authoritative
+    ("bm_george",  "b"),   # British Male  — deep, trustworthy
+]
+TTS_SPEED = 1.10
 
 WIDTH, HEIGHT = 1080, 1920
 FPS = 30
@@ -75,7 +150,6 @@ TOPICS_LOG  = Path("used_topics.json")
 UPLOAD_LOG  = Path("upload_log.json")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-# AI Disclosure text — added to every video description (YouTube policy compliance)
 AI_DISCLOSURE = (
     "\n\n⚠️ AI Disclosure: This video was created with the assistance of "
     "AI tools including AI-generated voiceover and script writing."
@@ -138,21 +212,21 @@ def _render_text_image(
         lines.append(current)
 
     line_bboxes = [dd.textbbox((0, 0), ln, font=font) for ln in lines]
-    line_h = max((bb[3] - bb[1]) for bb in line_bboxes) + 6
+    line_h  = max((bb[3] - bb[1]) for bb in line_bboxes) + 6
     block_w = max((bb[2] - bb[0]) for bb in line_bboxes)
     block_h = line_h * len(lines)
 
     img_w = block_w + padding * 2 + stroke_width * 2
     img_h = block_h + padding * 2 + stroke_width * 2
 
-    img = Image.new("RGBA", (img_w, img_h), bg_color or (0, 0, 0, 0))
+    img  = Image.new("RGBA", (img_w, img_h), bg_color or (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
 
     for i, line in enumerate(lines):
         bb = draw.textbbox((0, 0), line, font=font)
         lw = bb[2] - bb[0]
-        x = (img_w - lw) // 2
-        y = padding + stroke_width + i * line_h
+        x  = (img_w - lw) // 2
+        y  = padding + stroke_width + i * line_h
         for dx in range(-stroke_width, stroke_width + 1):
             for dy in range(-stroke_width, stroke_width + 1):
                 if dx != 0 or dy != 0:
@@ -210,7 +284,6 @@ def _clean_for_display(text: str) -> str:
 #  VOICEOVER — Kokoro TTS (Apache 2.0, commercial use OK)
 # ═══════════════════════════════════════════════════════════════
 
-# Cache the pipeline so we don't reload the model on every call
 _kokoro_pipelines: dict = {}
 
 
@@ -225,8 +298,7 @@ def generate_voiceover(script_lines: list, path: Path) -> str:
     """
     Generate voiceover using Kokoro TTS.
     License: Apache 2.0 — free for personal AND commercial use.
-    https://huggingface.co/hexgrad/Kokoro-82M
-    Saves a .wav file (path should have .wav extension).
+    Saves a .wav file (lossless, no encoder license issues).
     """
     full_text  = " ".join(line.strip() for line in script_lines if line.strip())
     clean_text = _clean_for_tts(full_text)
@@ -247,10 +319,11 @@ def generate_voiceover(script_lines: list, path: Path) -> str:
         raise RuntimeError(f"Kokoro TTS failed for voice {voice_name}: {e}")
 
     if not audio_parts:
-        raise RuntimeError("Kokoro TTS produced no audio — check espeak-ng is installed.")
+        raise RuntimeError(
+            "Kokoro TTS produced no audio — check espeak-ng is installed."
+        )
 
     full_audio = np.concatenate(audio_parts).astype(np.float32)
-    # Kokoro outputs at 24000 Hz
     sf.write(str(path), full_audio, samplerate=24000)
 
     print(f"    ✅ Kokoro voice: {voice_name}  |  Apache 2.0 ✓ commercial")
@@ -258,31 +331,74 @@ def generate_voiceover(script_lines: list, path: Path) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════
-#  SCRIPT GENERATION (Groq / LLaMA 3.3 — commercial OK)
+#  SCRIPT GENERATION — multi-niche rotation with mega-prompt
 # ═══════════════════════════════════════════════════════════════
 
 def generate_script() -> dict:
-    used      = json.loads(TOPICS_LOG.read_text()) if TOPICS_LOG.exists() else []
-    avoid_str = ", ".join(used[-40:]) if used else "none"
+    global NICHE
 
-    prompt = f"""You are a viral YouTube Shorts scriptwriter specializing in {NICHE}.
+    # ── 1. Pick niche via weighted random ──────────────────────
+    r          = random.uniform(0, _NICHE_TOTAL)
+    cumulative = 0
+    selected   = NICHE_POOL[0]
+    for entry in NICHE_POOL:
+        cumulative += entry[3]
+        if r <= cumulative:
+            selected = entry
+            break
+    niche_id, niche_name, tone_note, _ = selected
 
-Write a HIGHLY ENGAGING, PUNCHY YouTube Short script optimized for retention.
+    # ── 2. Load per-niche avoid-list ───────────────────────────
+    all_used: dict      = json.loads(TOPICS_LOG.read_text()) if TOPICS_LOG.exists() else {}
+    used_for_niche: list = all_used.get(niche_id, [])
+    avoid_str            = ", ".join(used_for_niche[-40:]) if used_for_niche else "none"
 
-Rules:
-1. Exactly 1 shocking core fact.
-2. 2-3 supporting/elaborating sentences that expand on that single fact.
-3. Use curiosity gaps, concrete shocking details.
-4. Easy to narrate naturally in 20-40 seconds.
-5. Final sentence: Follow for a new fact every hour!
-6. Avoid these topics: {avoid_str}
+    # ── 3. Polished mega-prompt ─────────────────────────────────
+    prompt = f"""You are a viral YouTube Shorts scriptwriter. Your output is watched by millions.
 
-Return ONLY valid JSON (no markdown, no code fences):
+NICHE: {niche_name}
+TONE GUIDANCE: {tone_note}
+
+━━ ACCURACY RULES (non-negotiable) ━━
+• Every claim must be verifiable. If you are uncertain, pick a different fact.
+• No exaggeration of numbers — use the real figure even if less dramatic.
+• No pseudoscience, no conspiracy theories, no "some say" vagueness.
+• Historical facts: must include a specific year or named source.
+• Science facts: must align with peer-reviewed consensus.
+
+━━ VIRAL STRUCTURE ━━
+1. HOOK (sentence 1): Start mid-thought. Use a shocking number, a named person,
+   or a before/after contrast. NEVER start with "Did you know".
+   Bad:  "Did you know the brain is amazing?"
+   Good: "Your brain actively rewrites your memories every single time you recall them."
+
+2. CORE FACT (sentences 2-3): One central verifiable claim. Give a specific
+   number, name, date, or location — vagueness kills retention.
+
+3. IMPLICATION (sentence 4): One sentence on WHY this changes how you see
+   something. Make it personal or societal — not just "this is interesting".
+
+4. CTA (final sentence): Exactly this — "Follow for a new fact every hour!"
+
+━━ STYLE RULES ━━
+• Total script: 4-5 sentences. Must narrate in 20-35 seconds.
+• Sentence rhythm: short → medium → medium → short → CTA.
+• No filler words: "basically", "actually", "literally", "really", "just".
+• Each script must feel like a different presenter — vary the opening word.
+  Do NOT start with the same word as these banned openers: Did, Have, Most, The, In.
+
+━━ TOPICS TO AVOID (already used in this niche) ━━
+{avoid_str}
+
+━━ OUTPUT FORMAT ━━
+Return ONLY valid JSON. No markdown, no code fences, no preamble, no trailing text:
 {{
-  "title": "catchy title with emoji, under 60 chars",
-  "topic": "3-word topic",
-  "hook": "sentence 1",
-  "script": ["sentence1", "sentence2", ...],
+  "title": "catchy title with one emoji, under 60 chars",
+  "topic": "3-word topic id",
+  "niche": "{niche_id}",
+  "hook": "the first sentence only",
+  "script": ["sentence1", "sentence2", "sentence3", "sentence4", "Follow for a new fact every hour!"],
+  "fact_check_note": "one-line note on what makes this verifiable (source or known study name)",
   "search_keywords": ["keyword1", "keyword2", "keyword3"],
   "description": "engaging YT description under 200 chars with keywords",
   "tags": ["tag1", "tag2", "tag3", "tag4", "tag5"]
@@ -295,10 +411,10 @@ Return ONLY valid JSON (no markdown, no code fences):
             "Content-Type": "application/json",
         },
         json={
-            "model": "llama-3.3-70b-versatile",
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.88,
-            "max_tokens": 900,
+            "model":       "llama-3.3-70b-versatile",
+            "messages":    [{"role": "user", "content": prompt}],
+            "temperature": 0.92,
+            "max_tokens":  950,
         },
         timeout=30,
     )
@@ -312,8 +428,15 @@ Return ONLY valid JSON (no markdown, no code fences):
     raw = raw.strip().rstrip("```").strip()
 
     data = json.loads(raw)
-    used.append(data["topic"])
-    TOPICS_LOG.write_text(json.dumps(used[-200:], indent=2))
+
+    # ── 4. Update per-niche avoid-list ─────────────────────────
+    used_for_niche.append(data["topic"])
+    all_used[niche_id] = used_for_niche[-200:]  # keep last 200 per niche
+    TOPICS_LOG.write_text(json.dumps(all_used, indent=2))
+
+    # ── 5. Hot-swap NICHE so brand bar matches this video ───────
+    NICHE = niche_name
+
     return data
 
 
@@ -339,7 +462,7 @@ def generate_background_music(duration: float) -> AudioClip:
         if i % 4 not in [0, 2]:
             continue
         idx = int(i * beat * sr)
-        L = min(int(0.28 * sr), n - idx)
+        L   = min(int(0.28 * sr), n - idx)
         if L <= 0:
             continue
         t_k   = np.arange(L) / sr
@@ -352,7 +475,7 @@ def generate_background_music(duration: float) -> AudioClip:
         if i % 4 not in [1, 3]:
             continue
         idx = int(i * beat * sr)
-        L = min(int(0.14 * sr), n - idx)
+        L   = min(int(0.14 * sr), n - idx)
         if L <= 0:
             continue
         t_s   = np.arange(L) / sr
@@ -365,7 +488,7 @@ def generate_background_music(duration: float) -> AudioClip:
     eighth = beat / 2
     for i in range(int(duration / eighth) + 2):
         idx = int(i * eighth * sr)
-        L = min(int(0.05 * sr), n - idx)
+        L   = min(int(0.05 * sr), n - idx)
         if L <= 0:
             continue
         t_h = np.arange(L) / sr
@@ -381,8 +504,8 @@ def generate_background_music(duration: float) -> AudioClip:
         L    = min(int(beat * 0.87 * sr), n - idx)
         if L <= 0:
             continue
-        t_b  = np.arange(L) / sr
-        env  = np.exp(-t_b * 3.5) * (1 - np.exp(-t_b * 80))
+        t_b = np.arange(L) / sr
+        env = np.exp(-t_b * 3.5) * (1 - np.exp(-t_b * 80))
         buf[idx:idx + L] += (
             np.sin(2 * np.pi * freq * t_b) * 0.70
             + np.sin(2 * np.pi * freq * 2 * t_b) * 0.30
@@ -420,8 +543,8 @@ def generate_background_music(duration: float) -> AudioClip:
         L    = min(int(beat * 0.70 * sr), n - idx)
         if L <= 0:
             continue
-        t_m  = np.arange(L) / sr
-        env  = np.exp(-t_m * 8.5) * (1 - np.exp(-t_m * 45))
+        t_m = np.arange(L) / sr
+        env = np.exp(-t_m * 8.5) * (1 - np.exp(-t_m * 45))
         buf[idx:idx + L] += (
             np.sin(2 * np.pi * freq * t_m) * 0.55
             + np.sin(2 * np.pi * freq * 2 * t_m) * 0.30
@@ -431,7 +554,7 @@ def generate_background_music(duration: float) -> AudioClip:
     # Vinyl crackle
     buf += rng.standard_normal(n) * 0.0025
 
-    # Fades + normalize
+    # Fades + normalise
     fade = int(sr * 2.5)
     buf[:fade]  *= np.linspace(0, 1, fade)
     buf[-fade:] *= np.linspace(1, 0, fade)
@@ -458,8 +581,7 @@ def fetch_stock_clips(keywords: list, target_count: int = 5) -> list:
     """
     Pexels License: https://www.pexels.com/license/
     All videos free for commercial use. No attribution required.
-    Restrictions: cannot sell unaltered copies, cannot imply endorsement.
-    Using as background footage in a monetized video = fully permitted.
+    Using as background footage in a monetised video = fully permitted.
     """
     links = []
     for keyword in keywords[:3]:
@@ -470,10 +592,10 @@ def fetch_stock_clips(keywords: list, target_count: int = 5) -> list:
                 "https://api.pexels.com/videos/search",
                 headers={"Authorization": PEXELS_API_KEY},
                 params={
-                    "query": keyword,
-                    "per_page": 6,
+                    "query":       keyword,
+                    "per_page":    6,
                     "orientation": orientation,
-                    "size": "medium",
+                    "size":        "medium",
                 },
                 timeout=15,
             )
@@ -627,7 +749,7 @@ def assemble_video(
         .set_duration(total_dur)
     )
 
-    # Top branding bar
+    # Top branding bar — uses current NICHE (hot-swapped per run)
     brand_bar = (
         ColorClip((WIDTH, 120), color=(25, 25, 35))
         .set_opacity(0.85)
@@ -758,11 +880,10 @@ def upload_to_youtube(video_path: Path, script_data: dict) -> str:
             )
 
     yt   = build("youtube", "v3", credentials=creds)
-    tags = script_data["tags"] + ["Shorts", "YouTubeShorts", NICHE.replace(" ", "")]
+    tags = script_data["tags"] + ["Shorts", "YouTubeShorts",
+                                   NICHE.replace(" ", "")]
 
-    # ── AI Disclosure in description (YouTube policy compliance) ──────────
-    # YouTube requires disclosure of AI-generated realistic content.
-    # We add it to every video description to stay fully compliant.
+    # AI Disclosure in description — YouTube policy compliance
     desc = (
         script_data["description"]
         + "\n\n#Shorts #YouTubeShorts "
@@ -775,7 +896,7 @@ def upload_to_youtube(video_path: Path, script_data: dict) -> str:
             "title":       script_data["title"],
             "description": desc,
             "tags":        list(dict.fromkeys(tags)),
-            "categoryId":  "27",   # Education
+            "categoryId":  "27",  # Education
         },
         "status": {
             "privacyStatus":           "public",
@@ -805,21 +926,25 @@ def upload_to_youtube(video_path: Path, script_data: dict) -> str:
 
 def run_pipeline(upload: bool = True):
     ts         = datetime.now().strftime("%Y%m%d_%H%M%S")
-    audio_path = OUTPUT_DIR / f"voice_{ts}.wav"   # .wav — no encoder license issues
+    audio_path = OUTPUT_DIR / f"voice_{ts}.wav"
     video_path = OUTPUT_DIR / f"short_{ts}.mp4"
 
     print(f"\n{'═' * 60}")
-    print(f"🎬  YouTube Shorts Pipeline (Legal Edition) — {ts}")
+    print(f"🎬  YouTube Shorts Pipeline (Multi-Niche Edition) — {ts}")
     print(f"    TTS: Kokoro Apache 2.0 ✓  |  Footage: Pexels Commercial ✓")
     print(f"    Music: Procedural original ✓  |  Script: LLaMA commercial ✓")
+    print(f"    Niches available: {len(NICHE_POOL)}  |  "
+          f"Capacity: ~{len(NICHE_POOL) * 200} unique videos")
     print(f"{'═' * 60}")
 
     try:
         print("\n📝  Generating script...")
         data = generate_script()
+        print(f"    Niche : {data['niche']}  →  {NICHE}")
         print(f"    Title : {data['title']}")
         print(f"    Topic : {data['topic']}")
         print(f"    Hook  : {data['hook'][:70]}...")
+        print(f"    Fact  : {data.get('fact_check_note', 'n/a')}")
 
         print("\n🎙   Generating voiceover (Kokoro TTS — commercial license)...")
         voice_used = generate_voiceover(data["script"], audio_path)
@@ -841,6 +966,7 @@ def run_pipeline(upload: bool = True):
         logs = json.loads(UPLOAD_LOG.read_text()) if UPLOAD_LOG.exists() else []
         logs.append({
             "timestamp": ts,
+            "niche":     data.get("niche"),
             "title":     data["title"],
             "video_id":  vid_id,
             "file":      str(video_path),
@@ -852,6 +978,7 @@ def run_pipeline(upload: bool = True):
             p.unlink(missing_ok=True)
 
         print(f"\n🎉  Done! → {video_path.name}")
+        print(f"    Niche: {NICHE}")
         print(f"    Fully legal — all components commercially licensed ✨")
         return vid_id
 
