@@ -381,7 +381,7 @@ TONE GUIDANCE: {tone_note}
 4. CTA (final sentence): Exactly this — "Follow for a new fact every hour!"
 
 ━━ STYLE RULES ━━
-• Total script: 4-5 sentences. Must narrate in 20-35 seconds.
+• Total script: 3-4 sentences.
 • Sentence rhythm: short → medium → medium → short → CTA.
 • No filler words: "basically", "actually", "literally", "really", "just".
 • Each script must feel like a different presenter — vary the opening word.
